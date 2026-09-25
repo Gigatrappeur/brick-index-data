@@ -27,6 +27,43 @@ export interface RebrickableElement {
 
 
 
+export interface RebrickablePartCategory {
+  id: string;
+  name: string;
+}
+
+export function parsePartCategoriesCSV(filePath: string): Map<string, RebrickablePartCategory> {
+  const content = readFileSync(filePath, "utf-8");
+  const records = parseCsv(content);
+
+  const map = new Map<string, RebrickablePartCategory>();
+  for (const row of records) {
+    const id = row.id?.trim() ?? "";
+    if (!id) continue;
+    map.set(id, { id, name: row.name?.trim() ?? "" });
+  }
+  return map;
+}
+
+export interface RebrickablePart {
+  partNum: string;
+  name: string;
+  catId: string;
+}
+
+export function parsePartsCSV(filePath: string): Map<string, RebrickablePart> {
+  const content = readFileSync(filePath, "utf-8");
+  const records = parseCsv(content);
+
+  const map = new Map<string, RebrickablePart>();
+  for (const row of records) {
+    const partNum = row.part_num?.trim() ?? "";
+    if (!partNum) continue;
+    map.set(partNum, { partNum, name: row.name?.trim() ?? "", catId: row.part_cat_id?.trim() ?? "" });
+  }
+  return map;
+}
+
 export function parseColorsCSV(filePath: string): Map<number, RebrickableColor> {
   const content = readFileSync(filePath, "utf-8");
   const records = parseCsv(content);

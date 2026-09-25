@@ -7,9 +7,8 @@ import { join } from "node:path";
 import { readdir, exists } from "node:fs/promises";
 import parser from "yargs-parser";
 import LDrawParser from "@gigatrappeur/ldraw-parser";
-// import { DATA_DIR } from "./paths";
 import { classifyPart } from "./classify";
-import { parseColorsCSV, parseElementsCSV, buildColorMapping } from "./csv";
+import { parseColorsCSV, parseElementsCSV, buildColorMapping, parsePartsCSV, parsePartCategoriesCSV } from "./csv";
 
 const DATA_DIR: string = join(import.meta.dir, "..", "data")
 const LDRAW_DIR = join(DATA_DIR, "ldraw");
@@ -18,19 +17,20 @@ const PARTS_DIR = join(LDRAW_DIR, "parts");
 const DB_PATH = `${DATA_DIR}/brick-data.sqlite`
 const REBRICKABLE_COLORS_PATH = join(DATA_DIR, "rebrickable", "colors.csv");
 const REBRICKABLE_ELEMENTS_PATH = join(DATA_DIR, "rebrickable", "elements.csv");
+const REBRICKABLE_PARTS_PATH = join(DATA_DIR, "rebrickable", "parts.csv");
+const REBRICKABLE_PART_CATEGORIES_PATH = join(DATA_DIR, "rebrickable", "part_categories.csv");
 
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS parts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ref_ldraw TEXT,
-  description TEXT,
+  name TEXT,
   ref_rebrickable TEXT,
   ref_lego TEXT,
   color INTEGER,
   category TEXT,
-  subcategory TEXT,
-  is_sticker INTEGER DEFAULT 0,
+  keywords TEXT,
   UNIQUE(ref_ldraw, color, ref_lego)
 );
 
@@ -38,17 +38,16 @@ CREATE INDEX IF NOT EXISTS idx_ref_ldraw ON parts(ref_ldraw);
 CREATE INDEX IF NOT EXISTS idx_ref_rebrickable ON parts(ref_rebrickable);
 CREATE INDEX IF NOT EXISTS idx_ref_lego ON parts(ref_lego);
 CREATE INDEX IF NOT EXISTS idx_category ON parts(category);
-CREATE INDEX IF NOT EXISTS idx_is_sticker ON parts(is_sticker);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS parts_fts USING fts5(
   id UNINDEXED,
-  ref_ldraw, ref_lego, ref_rebrickable, description, category, subcategory,
+  ref_ldraw, ref_lego, ref_rebrickable, name, category, keywords,
   tokenize='unicode61 remove_diacritics 1'
 );
 
 CREATE TRIGGER IF NOT EXISTS parts_ai AFTER INSERT ON parts BEGIN
-  INSERT INTO parts_fts(id, ref_ldraw, ref_lego, ref_rebrickable, description, category, subcategory)
-  VALUES (new.id, new.ref_ldraw, new.ref_lego, new.ref_rebrickable, new.description, new.category, new.subcategory);
+  INSERT INTO parts_fts(id, ref_ldraw, ref_lego, ref_rebrickable, name, category, keywords)
+  VALUES (new.id, new.ref_ldraw, new.ref_lego, new.ref_rebrickable, new.name, new.category, new.keywords);
 END;
 
 CREATE TRIGGER IF NOT EXISTS parts_ad AFTER DELETE ON parts BEGIN
@@ -57,8 +56,8 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS parts_au AFTER UPDATE ON parts BEGIN
   DELETE FROM parts_fts WHERE id = old.id;
-  INSERT INTO parts_fts(id, ref_ldraw, ref_lego, ref_rebrickable, description, category, subcategory)
-  VALUES (new.id, new.ref_ldraw, new.ref_lego, new.ref_rebrickable, new.description, new.category, new.subcategory);
+  INSERT INTO parts_fts(id, ref_ldraw, ref_lego, ref_rebrickable, name, category, keywords)
+  VALUES (new.id, new.ref_ldraw, new.ref_lego, new.ref_rebrickable, new.name, new.category, new.keywords);
 END;
 `;
 
@@ -90,6 +89,24 @@ async function indexParts(db: Database, filterParts?: string[]): Promise<IndexRe
 	}
 	console.log(`[index] ${elementsByPartNum.size} numéros de pièce uniques`);
 
+	console.log("[index] Chargement catégories et pièces Rebrickable...");
+	if (!await exists(REBRICKABLE_PARTS_PATH)) throw new Error(`CSV pièces introuvable: ${REBRICKABLE_PARTS_PATH}`);
+	if (!await exists(REBRICKABLE_PART_CATEGORIES_PATH)) throw new Error(`CSV catégories introuvable: ${REBRICKABLE_PART_CATEGORIES_PATH}`);
+
+	const rbCategories = parsePartCategoriesCSV(REBRICKABLE_PART_CATEGORIES_PATH);
+	const rbParts = parsePartsCSV(REBRICKABLE_PARTS_PATH);
+	const partToCategory = new Map<string, { catName: string; catId: string; partName: string }>();
+	for (const [partNum, part] of rbParts) {
+		if (part.catId && rbCategories.has(part.catId)) {
+			partToCategory.set(partNum, {
+				catName: rbCategories.get(part.catId)!.name,
+				catId: part.catId,
+				partName: part.name,
+			});
+		}
+	}
+	console.log(`[index] ${partToCategory.size} pièces avec catégorie`);
+
 	console.log("[index] Chargement LDConfig...");
 	const ldrawParser = new LDrawParser({ libraryRoot: LDRAW_DIR });
 	const colorTable = await ldrawParser.colorTable.getTable()
@@ -97,6 +114,27 @@ async function indexParts(db: Database, filterParts?: string[]): Promise<IndexRe
 
 	const { rbToLDrawColor } = buildColorMapping(rbColors, colorTable);
 	console.log(`[index] ${rbToLDrawColor.size} couleurs Rebrickable mappées`);
+
+	const filteredKeywords = new Set(["rebrickable", "bricklink", "ldraw"]);
+
+	function buildKeywords(partName: string, datKeywords: string[] | undefined, name: string, category: string): string {
+		const tokens = new Set<string>();
+		const add = (s: string) => {
+			if (!s) return;
+			const lower = s.toLowerCase();
+			for (const word of lower.split(/[\s\-.,;:()\/]+/)) {
+				const w = word.trim();
+				if (w && w.length > 1 && !filteredKeywords.has(w)) {
+					tokens.add(w);
+				}
+			}
+		};
+		add(partName);
+		add(name);
+		add(category);
+		datKeywords?.forEach(k => add(k));
+		return Array.from(tokens).join(" ");
+	}
 	
 	const allFilenames = (await readdir(PARTS_DIR, { withFileTypes: true }))
 		.filter(d => d.isFile() && d.name.endsWith(".dat"))
@@ -134,26 +172,33 @@ async function indexParts(db: Database, filterParts?: string[]): Promise<IndexRe
 		try {
 			const file = await ldrawParser.parseOnly(filename);
 
-			const description = file.meta.description || "";
+			const name = file.meta.description || "";
 			const rbKeyword = file.meta.keywords?.find(k => k.toLocaleLowerCase().startsWith("rebrickable"));
 			const refRebrickable = rbKeyword?.substring(12) || refLDraw;
+			const datKeywords = file.meta.keywords;
 
 			if (refRebrickable && elementsByPartNum.has(refRebrickable)) {
 				const elements = elementsByPartNum.get(refRebrickable)!;
-				const { category, subcategory, isSticker } = classifyPart(description);
+				const catInfo = partToCategory.get(refRebrickable);
+				const category = catInfo?.catName || classifyPart(name).category;
+				const partName = catInfo?.partName || "";
+				const keywords = buildKeywords(partName, datKeywords, name, category);
 				for (const el of elements) {
 					const ldrawColor = rbToLDrawColor.get(el.colorId) ?? el.colorId;
-					db.run(`INSERT OR IGNORE INTO parts (ref_ldraw, description, ref_rebrickable, ref_lego, color, category, subcategory, is_sticker)
-                  VALUES ($refLDraw, $description, $refRebrickable, $refLego, $color, $category, $subcategory, $isSticker)`,
-						{ $refLDraw: refLDraw, $description: description, $refRebrickable: refRebrickable, $refLego: el.elementId, $color: ldrawColor, $category: category, $subcategory: subcategory, $isSticker: isSticker ? 1 : 0 } as never);
+					db.run(`INSERT OR IGNORE INTO parts (ref_ldraw, name, ref_rebrickable, ref_lego, color, category, keywords)
+                  VALUES ($refLDraw, $name, $refRebrickable, $refLego, $color, $category, $keywords)`,
+						{ $refLDraw: refLDraw, $name: name, $refRebrickable: refRebrickable, $refLego: el.elementId, $color: ldrawColor, $category: category, $keywords: keywords } as never);
 					inserted++;
 					matched++;
 				}
 			} else {
-				const { category, subcategory, isSticker } = classifyPart(description);
-				db.run(`INSERT OR IGNORE INTO parts (ref_ldraw, description, ref_rebrickable, ref_lego, color, category, subcategory, is_sticker)
-                VALUES ($refLDraw, $description, $refRebrickable, NULL, NULL, $category, $subcategory, $isSticker)`,
-					{ $refLDraw: refLDraw, $description: description, $refRebrickable: refRebrickable, $category: category, $subcategory: subcategory, $isSticker: isSticker ? 1 : 0 } as never);
+				const catInfo = partToCategory.get(refRebrickable);
+				const category = catInfo?.catName || classifyPart(name).category;
+				const partName = catInfo?.partName || "";
+				const keywords = buildKeywords(partName, datKeywords, name, category);
+				db.run(`INSERT OR IGNORE INTO parts (ref_ldraw, name, ref_rebrickable, ref_lego, color, category, keywords)
+                VALUES ($refLDraw, $name, $refRebrickable, NULL, NULL, $category, $keywords)`,
+					{ $refLDraw: refLDraw, $name: name, $refRebrickable: refRebrickable, $category: category, $keywords: keywords } as never);
 				inserted++;
 			}
 		} catch (err) {
