@@ -68,12 +68,6 @@ jobs:
           TAG="v${{ steps.version.outputs.version }}"
           ASSET="brick-data-${{ steps.version.outputs.version }}.zip"
           
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          git tag "$TAG" -m "Release $TAG"
-          git push origin "$TAG"
-          
           cd data
           zip -r "../$ASSET" . -x "*.DS_Store" ".git/*" "node_modules/*"
           cd ..
