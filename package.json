@@ -1,11 +1,23 @@
 {
   "name": "brick-index-data",
-  "module": "index.ts",
+  "version": "1.0.0",
+  "module": "src/index.ts",
   "type": "module",
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/yargs-parser": "^21.0.3",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@gigatrappeur/ldraw-parser": "^1.0",
+    "csv-parse": "^7.0.2",
+    "yargs-parser": "^22.0.0"
   },
   "peerDependencies": {
     "typescript": "^7"
+  },
+  "scripts": {
+    "index": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit"
   }
 }
