@@ -16,8 +16,8 @@ const LDRAW_DIR = join(DATA_DIR, "ldraw");
 const PARTS_DIR = join(LDRAW_DIR, "parts");
 
 const DB_PATH = `${DATA_DIR}/brick-data.sqlite`
-const REBRICKABLE_COLORS_PATH = join(DATA_DIR, "rebrickable-colors.csv");
-const REBRICKABLE_ELEMENTS_PATH = join(DATA_DIR, "rebrickable-elements.csv");
+const REBRICKABLE_COLORS_PATH = join(DATA_DIR, "rebrickable", "colors.csv");
+const REBRICKABLE_ELEMENTS_PATH = join(DATA_DIR, "rebrickable", "elements.csv");
 
 
 const SCHEMA = `
