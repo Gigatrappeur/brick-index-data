@@ -3,12 +3,11 @@ import { readFileSync } from "node:fs";
 
 type CsvRecord = Record<string, string>;
 
-function parseCsv(content: string, options: { columns?: boolean; skip_empty_lines?: boolean; trim?: boolean } = {}): CsvRecord[] {
+function parseCsv(content: string): CsvRecord[] {
   return parse(content, {
     columns: true,
     skip_empty_lines: true,
     trim: true,
-    ...options,
   }) as unknown as CsvRecord[];
 }
 
